@@ -1,0 +1,3 @@
+[submodule "worker/image"]
+	path = worker/image
+	url = https://github.com/weiweijason/ai_novel_image.git
