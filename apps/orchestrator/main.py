@@ -147,6 +147,56 @@ def enqueue_llm_job(
     )
 
 
+# GPU Worker 類型對應
+GPU_WORKER_TYPES = {
+    "character_image": "image",
+    "scene_image": "image",
+    "background_image": "image",
+    "scene_video": "video",
+    "character_animation": "video",
+    "camera_motion": "video",
+    "voice_synthesis": "audio",
+    "voice_recognition": "audio",
+    "bgm_generation": "audio",
+    "audio_mixing": "audio",
+    "video_composition": "editor",
+    "final_render": "editor",
+    "subtitle_burn": "editor",
+    "video_concat": "editor",
+    "audio_sync": "editor",
+}
+
+
+def enqueue_gpu_job(
+    db,
+    *,
+    project_id: str,
+    episode_id: str | None,
+    scene_id: str | None,
+    job_type: str,
+    payload: dict,
+    priority: int = 5,
+) -> None:
+    """建立 GPU 作業 (image/video/audio/editor)"""
+    worker_type = GPU_WORKER_TYPES.get(job_type, "image")
+    db.add(
+        Job(
+            id=new_id("job"),
+            project_id=project_id,
+            episode_id=episode_id,
+            scene_id=scene_id,
+            worker_type=worker_type,
+            job_type=job_type,
+            status="queued",
+            priority=priority,
+            attempt=0,
+            max_attempts=3,
+            payload={"input": payload},
+            created_at=now_utc(),
+        )
+    )
+
+
 def process_failed_jobs(db) -> None:
     failed_jobs = db.scalars(select(Job).where(Job.status == "failed")).all()
     for job in failed_jobs:
@@ -257,6 +307,238 @@ def process_project(db, project: Project) -> None:
             project.status = "ready_for_gpu_pipeline"
             project.updated_at = now_utc()
 
+    # === GPU 管線階段 1: 角色圖像生成 ===
+    elif project.status == "ready_for_gpu_pipeline":
+        # 檢查是否已經有角色圖像作業
+        if not has_active_job(db, project.id, "character_image"):
+            # 從 character_profile 取得角色清單
+            characters = project.character_profile or {}
+            if isinstance(characters, list):
+                for char in characters:
+                    char_name = char.get("name", "unknown")
+                    char_desc = char.get("appearance", "")
+                    if not has_active_job(db, project.id, f"character_image_{char_name}"):
+                        enqueue_gpu_job(
+                            db,
+                            project_id=project.id,
+                            episode_id=episode_id,
+                            scene_id=None,
+                            job_type="character_image",
+                            payload={
+                                "character_name": char_name,
+                                "character_description": char_desc,
+                                "style": "anime",
+                                "width": 1024,
+                                "height": 1024,
+                            },
+                        )
+            project.status = "character_image_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 2: 場景圖像生成 ===
+    elif project.status == "character_image_pending":
+        completed = latest_completed_job(db, project.id, "character_image")
+        if completed is not None:
+            scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+            for scene in scenes:
+                scene_data = scene.scene_data or {}
+                scene_desc = scene_data.get("description", "")
+                if not has_scene_job(db, project.id, scene.id, "scene_image"):
+                    enqueue_gpu_job(
+                        db,
+                        project_id=project.id,
+                        episode_id=episode_id,
+                        scene_id=scene.id,
+                        job_type="scene_image",
+                        payload={
+                            "scene_description": scene_desc,
+                            "characters": project.character_profile or [],
+                            "style": "anime",
+                            "width": 1920,
+                            "height": 1080,
+                        },
+                    )
+            project.status = "scene_image_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 3: 場景影片生成 ===
+    elif project.status == "scene_image_pending":
+        scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+        if not scenes:
+            return
+        completed_scene_images = db.scalars(
+            select(Job).where(
+                Job.project_id == project.id,
+                Job.job_type == "scene_image",
+                Job.status == "completed",
+            )
+        ).all()
+        completed_map = {j.scene_id: j for j in completed_scene_images if j.scene_id}
+        all_completed = True
+        for scene in scenes:
+            completed_job = completed_map.get(scene.id)
+            if completed_job is None:
+                all_completed = False
+                continue
+        if all_completed:
+            for scene in scenes:
+                if not has_scene_job(db, project.id, scene.id, "scene_video"):
+                    scene_data = scene.scene_data or {}
+                    enqueue_gpu_job(
+                        db,
+                        project_id=project.id,
+                        episode_id=episode_id,
+                        scene_id=scene.id,
+                        job_type="scene_video",
+                        payload={
+                            "scene_image_url": (completed_map[scene.id].result or {}).get("image_url"),
+                            "scene_description": scene_data.get("description", ""),
+                            "duration": scene.duration_seconds or 10.0,
+                            "fps": 24,
+                        },
+                    )
+            project.status = "scene_video_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 4: 語音合成 ===
+    elif project.status == "scene_video_pending":
+        scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+        if not scenes:
+            return
+        completed_scene_videos = db.scalars(
+            select(Job).where(
+                Job.project_id == project.id,
+                Job.job_type == "scene_video",
+                Job.status == "completed",
+            )
+        ).all()
+        completed_map = {j.scene_id: j for j in completed_scene_videos if j.scene_id}
+        all_completed = True
+        for scene in scenes:
+            completed_job = completed_map.get(scene.id)
+            if completed_job is None:
+                all_completed = False
+                continue
+        if all_completed:
+            # 為每個場景的對話生成語音
+            scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+            for scene in scenes:
+                scene_data = scene.scene_data or {}
+                dialogues = scene_data.get("dialogues", [])
+                for dialogue in dialogues:
+                    char_name = dialogue.get("character", "unknown")
+                    text = dialogue.get("text", "")
+                    if not has_scene_job(db, project.id, scene.id, f"voice_synthesis_{char_name}"):
+                        enqueue_gpu_job(
+                            db,
+                            project_id=project.id,
+                            episode_id=episode_id,
+                            scene_id=scene.id,
+                            job_type="voice_synthesis",
+                            payload={
+                                "text": text,
+                                "character_name": char_name,
+                                "voice_config": (project.character_profile or {}).get(char_name, {}),
+                            },
+                        )
+            project.status = "voice_synthesis_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 5: 背景音樂生成 ===
+    elif project.status == "voice_synthesis_pending":
+        completed = latest_completed_job(db, project.id, "voice_synthesis")
+        if completed is not None:
+            if not has_active_job(db, project.id, "bgm_generation"):
+                enqueue_gpu_job(
+                    db,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    scene_id=None,
+                    job_type="bgm_generation",
+                    payload={
+                        "mood": (project.story_data or {}).get("mood", "neutral"),
+                        "genre": "anime",
+                        "duration": 180.0,
+                    },
+                )
+            project.status = "bgm_generation_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 6: 影片合成 ===
+    elif project.status == "bgm_generation_pending":
+        completed = latest_completed_job(db, project.id, "bgm_generation")
+        if completed is not None:
+            scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+            for scene in scenes:
+                if not has_scene_job(db, project.id, scene.id, "video_composition"):
+                    enqueue_gpu_job(
+                        db,
+                        project_id=project.id,
+                        episode_id=episode_id,
+                        scene_id=scene.id,
+                        job_type="video_composition",
+                        payload={
+                            "scene_id": scene.id,
+                            "bgm_url": (completed.result or {}).get("audio_url"),
+                        },
+                    )
+            project.status = "video_composition_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線階段 7: 最終渲染 ===
+    elif project.status == "video_composition_pending":
+        scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+        if not scenes:
+            return
+        completed_compositions = db.scalars(
+            select(Job).where(
+                Job.project_id == project.id,
+                Job.job_type == "video_composition",
+                Job.status == "completed",
+            )
+        ).all()
+        completed_map = {j.scene_id: j for j in completed_compositions if j.scene_id}
+        all_completed = True
+        for scene in scenes:
+            completed_job = completed_map.get(scene.id)
+            if completed_job is None:
+                all_completed = False
+                continue
+        if all_completed:
+            if not has_active_job(db, project.id, "final_render"):
+                enqueue_gpu_job(
+                    db,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    scene_id=None,
+                    job_type="final_render",
+                    payload={
+                        "scenes": [
+                            {
+                                "scene_id": scene.id,
+                                "video_url": (completed_map[scene.id].result or {}).get("video_url"),
+                                "duration": scene.duration_seconds or 10.0,
+                            }
+                            for scene in scenes
+                        ],
+                        "transitions": ["fade"],
+                        "output_name": f"episode_{episode_id}_final",
+                    },
+                )
+            project.status = "final_render_pending"
+            project.updated_at = now_utc()
+
+    # === GPU 管線完成 ===
+    elif project.status == "final_render_pending":
+        completed = latest_completed_job(db, project.id, "final_render")
+        if completed is not None:
+            project.status = "completed"
+            project.updated_at = now_utc()
+            episode = db.get(Episode, episode_id)
+            if episode is not None:
+                episode.status = "completed"
+                episode.updated_at = now_utc()
+
 
 def run_once() -> None:
     with SessionLocal() as db:
@@ -269,6 +551,14 @@ def run_once() -> None:
                         "story_generation_pending",
                         "script_generation_pending",
                         "scene_json_generation_pending",
+                        "ready_for_gpu_pipeline",
+                        "character_image_pending",
+                        "scene_image_pending",
+                        "scene_video_pending",
+                        "voice_synthesis_pending",
+                        "bgm_generation_pending",
+                        "video_composition_pending",
+                        "final_render_pending",
                     )
                 )
             )
