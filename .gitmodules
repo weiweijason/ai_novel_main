@@ -1,3 +1,12 @@
 [submodule "worker/image"]
 	path = worker/image
 	url = https://github.com/weiweijason/ai_novel_image.git
+[submodule "worker/video"]
+	path = worker/video
+	url = https://github.com/weiweijason/ai_novel_video.git
+[submodule "worker/audio"]
+	path = worker/audio
+	url = https://github.com/weiweijason/ai_novel_audio.git
+[submodule "worker/editor"]
+	path = worker/editor
+	url = https://github.com/weiweijason/ai_novel_editor.git
