@@ -1,15 +1,19 @@
+import io
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from minio import Minio
+from minio.error import S3Error
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from db import Base, engine, get_db
-from models import Episode, Job, Project, Scene, Worker
+from models import Asset, Character, Episode, Job, Project, Scene, Worker
 from schemas import (
     JobSummaryResponse,
     LLMJobCreateRequest,
@@ -254,10 +258,29 @@ def ui_project_detail(project_id: str, request: Request, db: Session = Depends(g
     jobs = db.scalars(
         select(Job).where(Job.project_id == project.id).order_by(Job.created_at.desc())
     ).all()
+    characters = db.scalars(
+        select(Character).where(Character.project_id == project.id).order_by(Character.created_at.asc())
+    ).all()
+    # 為每個角色附加圖片 URL
+    all_assets = db.scalars(
+        select(Asset).where(
+            Asset.project_id == project.id,
+            Asset.type == "character_image",
+        )
+    ).all()
+    for char in characters:
+        char_assets = [a for a in all_assets if a.asset_metadata.get("character_id") == char.id]
+        char.image_urls = [build_s3_url(a.storage_key) for a in char_assets]
     return templates.TemplateResponse(
         request=request,
         name="project_detail.html",
-        context={"project": project, "episode": episode, "scenes": scenes, "jobs": jobs},
+        context={
+            "project": project,
+            "episode": episode,
+            "scenes": scenes,
+            "jobs": jobs,
+            "characters": characters,
+        },
     )
 
 
@@ -279,6 +302,96 @@ def ui_create_project(
     db.add(project)
     db.commit()
     return RedirectResponse(url=f"/ui/projects/{project.id}", status_code=303)
+
+
+def build_s3_url(key: str) -> str:
+    """建立 S3 物件的公開 URL"""
+    s3_endpoint = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    return f"{s3_endpoint}/assets/{key}"
+
+
+def get_minio_client() -> Minio:
+    """取得 MinIO 客戶端"""
+    s3_endpoint = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    # 解析 endpoint
+    endpoint_url = s3_endpoint.replace("http://", "").replace("https://", "")
+    if ":" not in endpoint_url:
+        endpoint_url = f"{endpoint_url}:9000"
+    
+    access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
+    secret_key = os.getenv("S3_SECRET_KEY", "minioadmin123")
+
+    return Minio(
+        endpoint_url,
+        access_key=access_key,
+        secret_key=secret_key,
+        secure=False,
+    )
+
+
+def upload_to_s3(file_content: bytes, key: str, mime_type: str) -> str:
+    """上傳檔案到 S3/MinIO"""
+    minio_client = get_minio_client()
+
+    # 建立 bucket（如果不存在）
+    if not minio_client.bucket_exists("assets"):
+        minio_client.make_bucket("assets")
+
+    # 上傳檔案
+    minio_client.put_object(
+        "assets",
+        key,
+        io.BytesIO(file_content),
+        length=len(file_content),
+        content_type=mime_type,
+    )
+    return key
+
+
+@app.post("/ui/projects/{project_id}/characters")
+def ui_create_character(
+    project_id: str,
+    name: str = Form(...),
+    description: str = Form(""),
+    images: list[UploadFile] = Form([]),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    project = _project_or_404(db, project_id)
+
+    # 建立角色
+    character = Character(
+        id=_new_id("char"),
+        project_id=project.id,
+        name=name,
+        description=description or None,
+    )
+    db.add(character)
+    db.commit()
+    db.refresh(character)
+
+    # 上傳圖片
+    for img in images:
+        if img.filename and img.content_type and img.content_type.startswith("image/"):
+            file_content = img.file.read()
+            ext = Path(img.filename).suffix or ".jpg"
+            key = f"characters/{project.id}/{character.id}_{uuid4().hex[:8]}{ext}"
+            upload_to_s3(file_content, key, img.content_type)
+
+            # 記錄 asset
+            db.add(
+                Asset(
+                    id=_new_id("asset"),
+                    project_id=project.id,
+                    type="character_image",
+                    storage_key=key,
+                    mime_type=img.content_type,
+                    size_bytes=len(file_content),
+                    asset_metadata={"character_id": character.id},
+                )
+            )
+    db.commit()
+
+    return RedirectResponse(url=f"/ui/projects/{project_id}", status_code=303)
 
 
 @app.post("/ui/projects/{project_id}/generate")
