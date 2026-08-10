@@ -1,0 +1,67 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+    container_name: anime-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://anime:${POSTGRES_PASSWORD}@postgres:5432/anime
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      S3_SECRET_KEY: ${MINIO_SECRET_KEY}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+
+  orchestrator:
+    build:
+      context: ./apps/orchestrator
+    container_name: anime-orchestrator
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://anime:${POSTGRES_PASSWORD}@postgres:5432/anime
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16
+    container_name: anime-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: anime
+      POSTGRES_USER: anime
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: anime-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio
+    container_name: anime-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

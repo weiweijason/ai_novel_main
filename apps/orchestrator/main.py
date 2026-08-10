@@ -1,0 +1,292 @@
+import os
+import time
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./anime.db")
+POLL_SECONDS = int(os.getenv("ORCHESTRATOR_POLL_SECONDS", "3"))
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex[:12]}"
+
+
+class Project(Base):
+    __tablename__ = "projects"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_prompt: Mapped[str | None] = mapped_column(Text)
+    workflow_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    character_profile: Mapped[dict | None] = mapped_column(JSON)
+    story_data: Mapped[dict | None] = mapped_column(JSON)
+    script_data: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Episode(Base):
+    __tablename__ = "episodes"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(100), ForeignKey("projects.id"))
+    episode_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255))
+    synopsis: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Scene(Base):
+    __tablename__ = "scenes"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    episode_id: Mapped[str] = mapped_column(String(100), ForeignKey("episodes.id"))
+    scene_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    scene_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    project_id: Mapped[str | None] = mapped_column(String(100))
+    episode_id: Mapped[str | None] = mapped_column(String(100))
+    scene_id: Mapped[str | None] = mapped_column(String(100))
+    worker_id: Mapped[str | None] = mapped_column(String(100), ForeignKey("workers.id"))
+    worker_type: Mapped[str | None] = mapped_column(String(50))
+    job_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    progress: Mapped[float | None] = mapped_column(Float)
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+def latest_completed_job(db, project_id: str, job_type: str) -> Job | None:
+    return db.scalar(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.job_type == job_type,
+            Job.status == "completed",
+        )
+        .order_by(Job.completed_at.desc())
+        .limit(1)
+    )
+
+
+def has_active_job(db, project_id: str, job_type: str) -> bool:
+    job = db.scalar(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.job_type == job_type,
+            Job.status.in_(("queued", "running")),
+        )
+        .limit(1)
+    )
+    return job is not None
+
+
+def has_scene_job(db, project_id: str, scene_id: str, job_type: str) -> bool:
+    job = db.scalar(
+        select(Job)
+        .where(
+            Job.project_id == project_id,
+            Job.scene_id == scene_id,
+            Job.job_type == job_type,
+            Job.status.in_(("queued", "running", "completed")),
+        )
+        .limit(1)
+    )
+    return job is not None
+
+
+def enqueue_llm_job(
+    db, *, project_id: str, episode_id: str | None, scene_id: str | None, job_type: str, payload: dict
+) -> None:
+    db.add(
+        Job(
+            id=new_id("job"),
+            project_id=project_id,
+            episode_id=episode_id,
+            scene_id=scene_id,
+            worker_type="llm",
+            job_type=job_type,
+            status="queued",
+            priority=2,
+            attempt=0,
+            max_attempts=3,
+            payload={"input": payload},
+            created_at=now_utc(),
+        )
+    )
+
+
+def process_failed_jobs(db) -> None:
+    failed_jobs = db.scalars(select(Job).where(Job.status == "failed")).all()
+    for job in failed_jobs:
+        if job.attempt < job.max_attempts:
+            job.status = "queued"
+            job.worker_id = None
+            job.started_at = None
+        elif job.project_id:
+            project = db.get(Project, job.project_id)
+            if project is not None:
+                project.status = "failed"
+                project.updated_at = now_utc()
+
+
+def process_project(db, project: Project) -> None:
+    workflow = project.workflow_data or {}
+    episode_id = workflow.get("episode_id")
+    if not episode_id:
+        return
+
+    if project.status == "character_analysis_pending":
+        completed = latest_completed_job(db, project.id, "character_analysis")
+        if completed is not None:
+            project.character_profile = (completed.result or {}).get("output")
+            project.status = "story_generation_pending"
+            if not has_active_job(db, project.id, "story_generation"):
+                enqueue_llm_job(
+                    db,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    scene_id=None,
+                    job_type="story_generation",
+                    payload={
+                        "topic": project.source_prompt or project.name,
+                        "character_profile": project.character_profile or {},
+                    },
+                )
+
+    elif project.status == "story_generation_pending":
+        completed = latest_completed_job(db, project.id, "story_generation")
+        if completed is not None:
+            project.story_data = (completed.result or {}).get("output")
+            project.status = "script_generation_pending"
+            if not has_active_job(db, project.id, "script_generation"):
+                enqueue_llm_job(
+                    db,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    scene_id=None,
+                    job_type="script_generation",
+                    payload={
+                        "title": (project.story_data or {}).get("title", project.name),
+                        "synopsis": (project.story_data or {}).get("synopsis", ""),
+                    },
+                )
+
+    elif project.status == "script_generation_pending":
+        completed = latest_completed_job(db, project.id, "script_generation")
+        if completed is not None:
+            project.script_data = (completed.result or {}).get("output")
+            scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+            if not scenes:
+                return
+            for scene in scenes:
+                if not has_scene_job(db, project.id, scene.id, "scene_json_generation"):
+                    enqueue_llm_job(
+                        db,
+                        project_id=project.id,
+                        episode_id=episode_id,
+                        scene_id=scene.id,
+                        job_type="scene_json_generation",
+                        payload={
+                            "scene_id": scene.id,
+                            "line": f"Scene {scene.scene_number} line",
+                        },
+                    )
+            project.status = "scene_json_generation_pending"
+
+    elif project.status == "scene_json_generation_pending":
+        scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
+        if not scenes:
+            return
+
+        completed_scene_jobs = db.scalars(
+            select(Job).where(
+                Job.project_id == project.id,
+                Job.job_type == "scene_json_generation",
+                Job.status == "completed",
+            )
+        ).all()
+        completed_map = {j.scene_id: j for j in completed_scene_jobs if j.scene_id}
+
+        all_completed = True
+        for scene in scenes:
+            completed_job = completed_map.get(scene.id)
+            if completed_job is None:
+                all_completed = False
+                continue
+            scene.scene_data = (completed_job.result or {}).get("output", {})
+            scene.status = "ready_for_image"
+            scene.updated_at = now_utc()
+
+        if all_completed:
+            episode = db.get(Episode, episode_id)
+            if episode is not None:
+                episode.status = "ready_for_gpu_pipeline"
+                episode.updated_at = now_utc()
+            project.status = "ready_for_gpu_pipeline"
+            project.updated_at = now_utc()
+
+
+def run_once() -> None:
+    with SessionLocal() as db:
+        process_failed_jobs(db)
+        projects = db.scalars(
+            select(Project).where(
+                Project.status.in_(
+                    (
+                        "character_analysis_pending",
+                        "story_generation_pending",
+                        "script_generation_pending",
+                        "scene_json_generation_pending",
+                    )
+                )
+            )
+        ).all()
+        for project in projects:
+            process_project(db, project)
+        db.commit()
+
+
+def main() -> None:
+    print(
+        f"[{now_utc().isoformat()}] orchestrator started | database={DATABASE_URL!r}",
+        flush=True,
+    )
+    while True:
+        run_once()
+        time.sleep(POLL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()
