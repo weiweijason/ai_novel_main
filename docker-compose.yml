@@ -72,25 +72,32 @@ services:
     volumes:
       - minio_data:/data
 
-  editor-worker:
+  # ========================================
+  # LLM Worker (Gemini API / 本地 LLM)
+  # 部署在本機，不需要 GPU
+  # ========================================
+  llm-worker:
     build:
-      context: ./worker/editor
-    container_name: anime-editor-worker
+      context: ./apps/worker-agent
+    container_name: anime-llm-worker
     restart: unless-stopped
     environment:
       API_BASE_URL: http://api:8000
-      WORKER_ID: editor-01
-      WORKER_TYPE: editor
-      WORKER_HOSTNAME: editor-worker
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      S3_SECRET_KEY: ${MINIO_SECRET_KEY}
-      S3_BUCKET: assets
+      WORKER_ID: ${LLM_WORKER_ID:-llm-01}
+      WORKER_TYPE: llm
+      WORKER_HOSTNAME: llm-worker
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash-exp}
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      LLM_TOP_P: ${LLM_TOP_P:-0.9}
       PYTHONUNBUFFERED: "1"
     depends_on:
       api:
-        condition: service_started
-      minio:
         condition: service_started
 
 volumes:
