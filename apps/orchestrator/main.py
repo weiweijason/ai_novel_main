@@ -1,4 +1,6 @@
+import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -6,6 +8,20 @@ from uuid import uuid4
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True,
+)
+logger = logging.getLogger("orchestrator")
+
+# ──────────────────────────────────────────────
+# Database
+# ──────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./anime.db")
 POLL_SECONDS = int(os.getenv("ORCHESTRATOR_POLL_SECONDS", "3"))
 
@@ -15,6 +31,12 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 class Base(DeclarativeBase):
     pass
+
+
+def create_tables() -> None:
+    """Create all tables if they don't exist."""
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables ensured: %s", DATABASE_URL)
 
 
 def now_utc() -> datetime:
@@ -60,6 +82,24 @@ class Scene(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     scene_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Worker(Base):
+    __tablename__ = "workers"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    worker_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    hostname: Mapped[str | None] = mapped_column(String(255))
+    endpoint: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    gpu: Mapped[str | None] = mapped_column(String(255))
+    vram: Mapped[int | None] = mapped_column(Integer)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=list, nullable=False)
+    models: Mapped[dict] = mapped_column(JSON, default=list, nullable=False)
+    gpu_info: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    current_job: Mapped[str | None] = mapped_column(String(100))
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -569,12 +609,20 @@ def run_once() -> None:
 
 
 def main() -> None:
-    print(
-        f"[{now_utc().isoformat()}] orchestrator started | database={DATABASE_URL!r}",
-        flush=True,
-    )
+    logger.info("=" * 60)
+    logger.info("Orchestrator starting")
+    logger.info("Database: %s", DATABASE_URL)
+    logger.info("Poll interval: %ds", POLL_SECONDS)
+    logger.info("=" * 60)
+
+    # Create tables if they don't exist
+    create_tables()
+
     while True:
-        run_once()
+        try:
+            run_once()
+        except Exception as e:
+            logger.error("Error in run_once: %s", e, exc_info=True)
         time.sleep(POLL_SECONDS)
 
 
