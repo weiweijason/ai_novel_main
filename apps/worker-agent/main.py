@@ -45,7 +45,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 LLM_API_URL = os.getenv("LLM_API_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "16384"))  # 增加到 16K tokens 以支援長腳本
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
 
@@ -141,8 +141,73 @@ def _call_local_llm(system_prompt: str, user_content: str) -> str:
         raise
 
 
+def repair_truncated_json(text: str) -> str:
+    """Attempt to repair truncated JSON by closing unclosed strings, arrays, and objects."""
+    result = []
+    in_string = False
+    escape_next = False
+    
+    for char in text:
+        if escape_next:
+            result.append(char)
+            escape_next = False
+            continue
+        
+        if char == '\\' and in_string:
+            result.append(char)
+            escape_next = True
+            continue
+        
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            result.append(char)
+            continue
+        
+        if in_string:
+            result.append(char)
+            continue
+        
+        # Outside of string
+        if char in '{}[]':
+            result.append(char)
+        elif char == ',':
+            result.append(char)
+        elif char in ' \n\r\t':
+            result.append(char)
+    
+    # If we're still in a string, close it
+    if in_string:
+        result.append('"')
+    
+    # Count unclosed brackets and braces
+    stack = []
+    for char in result:
+        if char in '{[':
+            stack.append(char)
+        elif char == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+            else:
+                stack.append('{')  # mismatched, treat as unclosed
+        elif char == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+            else:
+                stack.append('[')  # mismatched, treat as unclosed
+    
+    # Close any unclosed brackets/braces in reverse order
+    while stack:
+        opened = stack.pop()
+        if opened == '{':
+            result.append('}')
+        elif opened == '[':
+            result.append(']')
+    
+    return ''.join(result)
+
+
 def parse_json_from_response(text: str) -> dict[str, Any]:
-    """Extract JSON from LLM response (handles markdown code blocks)."""
+    """Extract JSON from LLM response (handles markdown code blocks & truncated JSON)."""
     text = text.strip()
     # Remove markdown code block wrappers
     if text.startswith("```"):
@@ -151,7 +216,24 @@ def parse_json_from_response(text: str) -> dict[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]  # remove closing ```
         text = "\n".join(lines)
-    return json.loads(text.strip())
+    
+    text = text.strip()
+    
+    # Try parsing directly first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning("Direct JSON parse failed: %s, attempting repair...", e)
+    
+    # Try repairing truncated JSON
+    try:
+        repaired = repair_truncated_json(text)
+        return json.loads(repaired)
+    except json.JSONDecodeError as repair_err:
+        logger.error("JSON repair failed: %s", repair_err)
+        raise
+
+
 
 
 def register_worker() -> None:
@@ -360,6 +442,8 @@ SCRIPT_GENERATION_SYSTEM = """\
 你是一位專業的動漫分鏡腳本作家。請根據用戶提供的故事大綱，生成詳細的分鏡腳本。
 請以 JSON 格式回覆，不要包含其他文字。
 
+**重要：請確保 JSON 格式完整，所有括號和引號都要正確閉合。**
+
 JSON 格式:
 {
   "title": "腳本標題",
@@ -370,7 +454,7 @@ JSON 格式:
       "scene_number": 1,
       "location": "場景地點",
       "time": "時間 (白天/夜晚/傍晚)",
-      "description": "場景描述",
+      "description": "場景描述 (簡短)",
       "characters_present": ["角色1", "角色2"],
       "dialogues": [
         {"character": "角色名", "line": "對白", "emotion": "情緒"}
@@ -379,7 +463,9 @@ JSON 格式:
       "duration_seconds": 預計秒數
     }
   ]
-}"""
+}
+
+**注意：每個場景的對話最多 3-4 句，保持簡潔。**"""
 
 
 def _script_generation(user_input: dict[str, Any]) -> dict[str, Any]:
@@ -391,7 +477,9 @@ def _script_generation(user_input: dict[str, Any]) -> dict[str, Any]:
 
     user_content = f"""標題: {title}
 故事大綱: {story_outline}
-角色列表: {char_list}"""
+角色列表: {char_list}
+
+請生成 4-6 個場景的腳本，每個場景保持簡潔。"""
 
     logger.info("Calling LLM for script_generation: title=%s", title)
     text = call_llm(SCRIPT_GENERATION_SYSTEM, user_content)

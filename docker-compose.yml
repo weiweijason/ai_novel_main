@@ -86,13 +86,13 @@ services:
       WORKER_ID: ${LLM_WORKER_ID:-llm-01}
       WORKER_TYPE: llm
       WORKER_HOSTNAME: llm-worker
-      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash-exp}
-      LLM_API_URL: ${LLM_API_URL:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      LLM_API_URL: ${LLM_API_URL:-http://host.docker.internal:11434/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      LLM_MODEL: ${LLM_MODEL:-llama3.1}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-16384}
       LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
       LLM_TOP_P: ${LLM_TOP_P:-0.9}
       PYTHONUNBUFFERED: "1"
