@@ -243,55 +243,68 @@ def update_job_status(
 # ──────────────────────────────────────────────
 
 CHARACTER_ANALYSIS_SYSTEM = """\
-你是一位專業的動漫角色設計師。請根據用戶提供的資訊，生成一個完整的角色設定。
-請以 JSON 格式回覆，不要包含其他文字。
+你是一位專業的動漫角色設計師。請根據用戶提供的資訊，生成一個完整的角色設定清單。
+請以 JSON 陣列格式回覆，不要包含其他文字。
+
+即使只有一個角色，也要用陣列格式。
 
 JSON 格式:
-{
-  "name": "角色名稱",
-  "summary": "角色簡介 (1-2 句)",
-  "personality": {
-    "traits": ["特質1", "特質2", "特質3"],
-    "strengths": ["優點1", "優點2"],
-    "weaknesses": ["缺點1", "缺點2"],
-    "motivation": "角色動機"
-  },
-  "appearance": {
-    "style": "動漫風格描述",
-    "hair": "髮型/髮色",
-    "eyes": "眼睛描述",
-    "clothing": "服裝風格",
-    "distinctive_features": "獨特特徵"
-  },
-  "voice": {
-    "tone": "聲音基調",
-    "language": "主要語言"
+[
+  {
+    "name": "角色名稱",
+    "summary": "角色簡介 (1-2 句)",
+    "personality": {
+      "traits": ["特質1", "特質2", "特質3"],
+      "strengths": ["優點1", "優點2"],
+      "weaknesses": ["缺點1", "缺點2"],
+      "motivation": "角色動機"
+    },
+    "appearance": {
+      "style": "動漫風格描述",
+      "hair": "髮型/髮色",
+      "eyes": "眼睛描述",
+      "clothing": "服裝風格",
+      "distinctive_features": "獨特特徵"
+    },
+    "voice": {
+      "tone": "聲音基調",
+      "language": "主要語言"
+    }
   }
-}"""
+]"""
 
 
 def _character_analysis(user_input: dict[str, Any]) -> dict[str, Any]:
+    brief = user_input.get("brief", "")
+    project_name = user_input.get("project_name", "")
     name = user_input.get("name", "")
     description = user_input.get("description", "")
     extra = user_input.get("extra", "")
 
-    user_content = f"""角色名稱: {name}
+    # 支援兩種輸入格式
+    if brief:
+        user_content = f"""專案名稱: {project_name}
+角色簡述: {brief}"""
+    else:
+        user_content = f"""角色名稱: {name}
 基本描述: {description}
 額外資訊: {extra}"""
 
-    logger.info("Calling LLM for character_analysis: name=%s", name)
+    logger.info("Calling LLM for character_analysis: brief=%s", brief[:50] if brief else name)
     text = call_llm(CHARACTER_ANALYSIS_SYSTEM, user_content)
     if not text:
         raise RuntimeError("LLM returned empty response")
 
     try:
         result = parse_json_from_response(text)
+        # 確保回傳格式是陣列
+        if isinstance(result, dict):
+            result = [result]
+        logger.info("character_analysis completed: %d characters", len(result))
+        return {"characters": result}
     except json.JSONDecodeError as e:
         logger.error("Failed to parse character_analysis JSON: %s\nRaw: %s", e, text)
         raise RuntimeError(f"Invalid JSON response from LLM: {e}")
-
-    logger.info("character_analysis completed: %s", result.get("name"))
-    return result
 
 
 STORY_GENERATION_SYSTEM = """\

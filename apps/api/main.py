@@ -446,7 +446,12 @@ def worker_heartbeat(
     if worker is None:
         raise HTTPException(status_code=404, detail="Worker not registered")
 
-    worker.status = payload.status
+    # 如果 worker 之前被標記為 unresponsive，現在恢復它
+    if worker.status == "unresponsive":
+        worker.status = payload.status if payload.status else "idle"
+        print(f"Worker {worker.id} recovered from unresponsive state")
+    else:
+        worker.status = payload.status
     worker.current_job = payload.current_job
     worker.gpu_info = payload.gpu
     worker.last_heartbeat = _now()
@@ -508,9 +513,11 @@ def claim_worker_job(
     if worker is None:
         raise HTTPException(status_code=404, detail="Worker not registered")
 
+    # 修復: 使用 & 連接 SQLAlchemy 條件
     job = db.scalar(
         select(Job)
-        .where(Job.status == "queued", Job.worker_type == worker.worker_type)
+        .where(Job.status == "queued")
+        .where(Job.worker_type == worker.worker_type)
         .order_by(Job.priority.asc(), Job.created_at.asc())
         .limit(1)
     )
