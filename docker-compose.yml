@@ -69,8 +69,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-      MINIO_SERVER_URL: http://anime_s3.weiwei92.cc
-      MINIO_BROWSER_REDIRECT_URL: https://anime_s3_web.weiwei92.cc
+      MINIO_SERVER_URL: http://anime-s3.weiwei92.cc
+      MINIO_BROWSER_REDIRECT_URL: https://anime-s3-web.weiwei92.cc
     volumes:
       - minio_data:/data
 
