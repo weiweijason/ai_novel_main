@@ -69,7 +69,6 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-      MINIO_SERVER_URL: "anime_s3.weiwei92.cc:443"
     volumes:
       - minio_data:/data
 
