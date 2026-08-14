@@ -142,62 +142,88 @@ def _call_local_llm(system_prompt: str, user_content: str) -> str:
 
 
 def repair_truncated_json(text: str) -> str:
-    """Attempt to repair truncated JSON by closing unclosed strings, arrays, and objects."""
-    result = []
+    """
+    Attempt to repair truncated JSON by closing unclosed strings, arrays, and objects.
+    
+    策略：
+    1. 追蹤當前解析狀態（是否在字串中、堆疊中的結構）
+    2. 如果遇到截斷的字串，關閉它
+    3. 根據堆疊關閉所有未完成的結構
+    4. 處理最後一個元素是多餘逗號的情況
+    """
+    result = list(text)
     in_string = False
     escape_next = False
+    stack = []  # 追蹤未關閉的 { 和 [
+    last_meaningful_pos = -1  # 最後一個有意義的字符位置
     
-    for char in text:
+    # 第一遍：掃描文本，追蹤狀態
+    for i, char in enumerate(result):
         if escape_next:
-            result.append(char)
             escape_next = False
+            last_meaningful_pos = i
             continue
         
         if char == '\\' and in_string:
-            result.append(char)
             escape_next = True
+            last_meaningful_pos = i
             continue
         
         if char == '"' and not escape_next:
             in_string = not in_string
-            result.append(char)
+            last_meaningful_pos = i
             continue
         
         if in_string:
-            result.append(char)
+            last_meaningful_pos = i
             continue
         
-        # Outside of string
-        if char in '{}[]':
-            result.append(char)
+        # 在字串外
+        if char == '{':
+            stack.append(('{', i))
+            last_meaningful_pos = i
+        elif char == '[':
+            stack.append(('[', i))
+            last_meaningful_pos = i
+        elif char == '}':
+            # 找到匹配的 {
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j][0] == '{':
+                    stack.pop(j)
+                    last_meaningful_pos = i
+                    break
+            else:
+                last_meaningful_pos = i  # 沒有匹配的 {，忽略
+        elif char == ']':
+            # 找到匹配的 [
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j][0] == '[':
+                    stack.pop(j)
+                    last_meaningful_pos = i
+                    break
+            else:
+                last_meaningful_pos = i  # 沒有匹配的 [，忽略
         elif char == ',':
-            result.append(char)
-        elif char in ' \n\r\t':
-            result.append(char)
+            last_meaningful_pos = i
+        elif char not in ' \n\r\t':
+            last_meaningful_pos = i
     
-    # If we're still in a string, close it
+    # 如果還在字串中，關閉字串
     if in_string:
         result.append('"')
     
-    # Count unclosed brackets and braces
-    stack = []
-    for char in result:
-        if char in '{[':
-            stack.append(char)
-        elif char == '}':
-            if stack and stack[-1] == '{':
-                stack.pop()
-            else:
-                stack.append('{')  # mismatched, treat as unclosed
-        elif char == ']':
-            if stack and stack[-1] == '[':
-                stack.pop()
-            else:
-                stack.append('[')  # mismatched, treat as unclosed
+    # 移除最後一個多餘的逗號（如果有）
+    cleaned = [c for c in result]
+    while cleaned and cleaned[-1] in ', \n\r\t':
+        if cleaned[-1] == ',':
+            cleaned.pop()  # 移除多餘的逗號
+            break
+        cleaned.pop()
+    result = cleaned
     
-    # Close any unclosed brackets/braces in reverse order
+    # 關閉所有未完成的結構
     while stack:
-        opened = stack.pop()
+        opened, _ = stack.pop()
         if opened == '{':
             result.append('}')
         elif opened == '[':
