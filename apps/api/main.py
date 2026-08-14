@@ -556,12 +556,12 @@ def claim_worker_job(
 # ========================================
 # 測試端點 - 直接創建 Image Job（跳過 LLM 腳本生成）
 # ========================================
-@app.post("/test/image-job", response_model=WorkerJobAcceptedResponse)
+@app.post("/test/image-job", response_model=dict)
 def create_test_image_job(
     payload: dict[str, Any], db: Session = Depends(get_db)
-) -> WorkerJobAcceptedResponse:
+) -> dict:
     """
-    測試端點：直接創建 Image Job，跳過前面的 LLM 腳本生成流程
+    測試端點：創建完整的 Project 結構並直接進入 GPU 管線
     
     Request Body:
     {
@@ -581,45 +581,157 @@ def create_test_image_job(
     if job_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"Invalid job_type. Must be one of: {valid_types}")
     
+    # 創建測試 Project
+    project_id = _new_id("proj")
+    episode_id = _new_id("ep")
+    
+    project = Project(
+        id=project_id,
+        name=f"測試專案 {job_type}",
+        description="測試 Image Worker 的專案",
+        status="ready_for_gpu_pipeline",  # 直接進入 GPU 管線
+        source_prompt=user_input.get("character_description", user_input.get("scene_description", "test")),
+        workflow_data={
+            "episode_id": episode_id,
+        },
+        character_profile={
+            "characters": [
+                {
+                    "name": user_input.get("character_name", "test-character"),
+                    "appearance": user_input.get("character_description", "anime character"),
+                }
+            ]
+        } if job_type == "character_image" else {},
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(project)
+    
+    # 創建 Episode
+    episode = Episode(
+        id=episode_id,
+        project_id=project_id,
+        episode_number=1,
+        title="測試集數",
+        status="ready_for_gpu_pipeline",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(episode)
+    
+    # 創建 Scene（scene_image 和 background_image 需要）
+    scene_id = None
+    if job_type in ("scene_image", "background_image"):
+        scene_id = _new_id("scn")
+        scene = Scene(
+            id=scene_id,
+            episode_id=episode_id,
+            scene_number=1,
+            duration_seconds=10.0,
+            status="ready_for_image",
+            scene_data={
+                "description": user_input.get("scene_description", user_input.get("location", "test scene")),
+            },
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        db.add(scene)
+    
+    db.commit()
+    
+    # 創建 Image Job
     job_id = _new_id("job")
     job = _create_job(
         db=db,
         job_id=job_id,
         job_type=job_type,
-        project_id=None,  # 測試模式不需要關聯 Project
-        episode_id=None,
-        scene_id=None,
+        project_id=project_id,
+        episode_id=episode_id,
+        scene_id=scene_id,
         worker_id=None,
         worker_type="image",
-        priority=1,  # 高優先級
+        priority=1,
         max_attempts=3,
         payload={"input": user_input},
     )
+    db.commit()
     
-    return WorkerJobAcceptedResponse(job_id=job.id, status="accepted")
+    return {
+        "job_id": job.id,
+        "project_id": project_id,
+        "episode_id": episode_id,
+        "scene_id": scene_id,
+        "status": "accepted",
+        "message": f"Job created successfully. Orchestrator will process it.",
+    }
 
 
-@app.get("/test/image-jobs", response_model=list[JobSummaryResponse])
-def list_test_image_jobs(db: Session = Depends(get_db)) -> list[JobSummaryResponse]:
-    """列出所有測試 Image Job"""
+@app.get("/test/image-jobs", response_model=list[dict])
+def list_test_image_jobs(db: Session = Depends(get_db)) -> list[dict]:
+    """列出所有測試 Image Job（包含 Project 資訊）"""
+    # 取得所有 worker_type=image 的 job
     jobs = db.scalars(
         select(Job)
         .where(Job.worker_type == "image")
-        .where(Job.project_id.is_(None))  # 測試 Job 沒有關聯 Project
         .order_by(Job.created_at.desc())
+        .limit(50)  # 限制返回 50 個最新的 job
     ).all()
-    return [
-        JobSummaryResponse(
-            id=job.id,
-            job_type=job.job_type,
-            worker_type=job.worker_type,
-            status=job.status,
-            attempt=job.attempt,
-            max_attempts=job.max_attempts,
-            created_at=job.created_at,
-        )
-        for job in jobs
-    ]
+    
+    result = []
+    for job in jobs:
+        # 如果有關聯 Project，取得 Project 名稱
+        project_name = None
+        project_status = None
+        if job.project_id:
+            project = db.get(Project, job.project_id)
+            if project:
+                project_name = project.name
+                project_status = project.status
+        
+        result.append({
+            "id": job.id,
+            "job_type": job.job_type,
+            "worker_type": job.worker_type,
+            "status": job.status,
+            "attempt": job.attempt,
+            "max_attempts": job.max_attempts,
+            "created_at": job.created_at,
+            "project_id": job.project_id,
+            "project_name": project_name,
+            "project_status": project_status,
+            "progress": job.progress,
+        })
+    
+    return result
+
+
+@app.get("/worker/jobs/{job_id}")
+def get_worker_job_detail(job_id: str, db: Session = Depends(get_db)) -> dict:
+    """獲取單一 Job 的詳細資訊"""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {
+        "id": job.id,
+        "job_type": job.job_type,
+        "worker_type": job.worker_type,
+        "status": job.status,
+        "priority": job.priority,
+        "attempt": job.attempt,
+        "max_attempts": job.max_attempts,
+        "progress": job.progress,
+        "input": job.payload.get("input", {}) if job.payload else {},
+        "result": job.result,
+        "error": job.error,
+        "project_id": job.project_id,
+        "episode_id": job.episode_id,
+        "scene_id": job.scene_id,
+        "worker_id": job.worker_id,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
 
 
 @app.post("/worker/jobs/{job_id}/status", response_model=WorkerJobStatusResponse)
