@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Worker 測試</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --card-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    body {
+      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+      min-height: 100vh;
+      padding: 2rem 0;
+    }
+    .card {
+      border: none;
+      border-radius: 1rem;
+      box-shadow: var(--card-shadow);
+    }
+    .card-header {
+      border-radius: 1rem 1rem 0 0 !important;
+      background: var(--primary-gradient);
+      color: white;
+      font-weight: 600;
+    }
+    .status-badge {
+      font-size: 0.8rem;
+      padding: 0.3rem 0.6rem;
+    }
+    .log-box {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.85rem;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .log-box .info { color: #4ec9b0; }
+    .log-box .success { color: #6a9955; }
+    .log-box .error { color: #f44747; }
+    .log-box .warning { color: #dcdcaa; }
+    .result-image {
+      max-width: 100%;
+      border-radius: 0.5rem;
+      box-shadow: var(--card-shadow);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="row mb-4">
+      <div class="col">
+        <h1><i class="bi bi-camera-video"></i> Image Worker 測試頁面</h1>
+        <p class="text-muted">直接創建 Image Job 來測試 Image Worker 和 MinIO 的連線</p>
+        <a href="/ui" class="btn btn-outline-secondary"><i class="bi bi-arrow-left"></i> 返回首頁</a>
+      </div>
+    </div>
+
+    <!-- 創建測試 Job -->
+    <div class="row mb-4">
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header">
+            <i class="bi bi-plus-circle"></i> 創建測試 Image Job
+          </div>
+          <div class="card-body">
+            <form id="createJobForm">
+              <div class="mb-3">
+                <label class="form-label">Job 類型</label>
+                <select class="form-select" id="jobType" required>
+                  <option value="character_image">角色立繪 (character_image)</option>
+                  <option value="scene_image">場景圖片 (scene_image)</option>
+                  <option value="background_image">背景圖片 (background_image)</option>
+                </select>
+              </div>
+
+              <!-- 角色立繪表單 -->
+              <div id="characterFields">
+                <div class="mb-3">
+                  <label class="form-label">角色名稱</label>
+                  <input type="text" class="form-control" id="characterName" placeholder="例如：weiwei">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">角色描述</label>
+                  <textarea class="form-control" id="characterDesc" rows="3" placeholder="例如：藍色長髮，紅色眼睛，穿著校服"></textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">風格</label>
+                  <input type="text" class="form-control" id="style" value="anime" placeholder="例如：anime">
+                </div>
+              </div>
+
+              <!-- 場景圖片表單 -->
+              <div id="sceneFields" style="display:none;">
+                <div class="mb-3">
+                  <label class="form-label">場景描述</label>
+                  <textarea class="form-control" id="sceneDesc" rows="3" placeholder="例如：學校教室，下午"></textarea>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">風格</label>
+                  <input type="text" class="form-control" id="sceneStyle" value="anime" placeholder="例如：anime">
+                </div>
+              </div>
+
+              <!-- 背景圖片表單 -->
+              <div id="backgroundFields" style="display:none;">
+                <div class="mb-3">
+                  <label class="form-label">地點</label>
+                  <input type="text" class="form-control" id="location" placeholder="例如：公園">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">時間</label>
+                  <input type="text" class="form-control" id="timeOfDay" value="afternoon" placeholder="例如：afternoon">
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">天氣</label>
+                  <input type="text" class="form-control" id="weather" value="clear" placeholder="例如：clear">
+                </div>
+              </div>
+
+              <button type="submit" class="btn btn-primary w-100">
+                <i class="bi bi-send"></i> 創建 Job
+              </button>
+            </form>
+
+            <div id="createResult" class="mt-3" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Job 列表 -->
+      <div class="col-md-6">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-list-ul"></i> 測試 Job 列表</span>
+            <button class="btn btn-sm btn-light" onclick="loadJobs()"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+          </div>
+          <div class="card-body">
+            <div id="jobsList">
+              <div class="text-center text-muted">
+                <i class="bi bi-hourglass-split"></i> 載入中...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Job 詳情 -->
+    <div class="row" id="jobDetailRow" style="display:none;">
+      <div class="col">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-info-circle"></i> Job 詳情</span>
+            <button class="btn btn-sm btn-light" onclick="closeJobDetail()"><i class="bi bi-x"></i> 關閉</button>
+          </div>
+          <div class="card-body">
+            <div id="jobDetail"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 切換 Job 類型表單
+    document.getElementById('jobType').addEventListener('change', function() {
+      const type = this.value;
+      document.getElementById('characterFields').style.display = type === 'character_image' ? 'block' : 'none';
+      document.getElementById('sceneFields').style.display = type === 'scene_image' ? 'block' : 'none';
+      document.getElementById('backgroundFields').style.display = type === 'background_image' ? 'block' : 'none';
+    });
+
+    // 創建 Job
+    document.getElementById('createJobForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      
+      const type = document.getElementById('jobType').value;
+      let input = {};
+      
+      if (type === 'character_image') {
+        input = {
+          character_name: document.getElementById('characterName').value || 'test-character',
+          character_description: document.getElementById('characterDesc').value || 'anime character',
+          style: document.getElementById('style').value || 'anime'
+        };
+      } else if (type === 'scene_image') {
+        input = {
+          scene_description: document.getElementById('sceneDesc').value || 'anime scene',
+          style: document.getElementById('sceneStyle').value || 'anime'
+        };
+      } else if (type === 'background_image') {
+        input = {
+          location: document.getElementById('location').value || 'background',
+          time: document.getElementById('timeOfDay').value || 'day',
+          weather: document.getElementById('weather').value || 'clear'
+        };
+      }
+      
+      const resultDiv = document.getElementById('createResult');
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = '<div class="alert alert-info"><i class="bi bi-hourglass-split"></i> 創建中...</div>';
+      
+      try {
+        const response = await fetch('/test/image-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, input })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          resultDiv.innerHTML = `<div class="alert alert-success"><i class="bi bi-check-circle"></i> Job 創建成功！<br>Job ID: <code>${data.job_id}</code></div>`;
+          loadJobs();
+        } else {
+          resultDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 錯誤: ${data.detail || JSON.stringify(data)}</div>`;
+        }
+      } catch (error) {
+        resultDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 請求失敗: ${error.message}</div>`;
+      }
+    });
+
+    // 載入 Job 列表
+    async function loadJobs() {
+      const listDiv = document.getElementById('jobsList');
+      listDiv.innerHTML = '<div class="text-center text-muted"><i class="bi bi-hourglass-split"></i> 載入中...</div>';
+      
+      try {
+        const response = await fetch('/test/image-jobs');
+        const jobs = await response.json();
+        
+        if (jobs.length === 0) {
+          listDiv.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i><br>尚無測試 Job</div>';
+          return;
+        }
+        
+        let html = '';
+        for (const job of jobs) {
+          const statusClass = job.status === 'completed' ? 'success' : 
+                             job.status === 'failed' ? 'danger' : 
+                             job.status === 'running' ? 'warning' : 'secondary';
+          const statusIcon = job.status === 'completed' ? 'check-circle' : 
+                           job.status === 'failed' ? 'x-circle' : 
+                           job.status === 'running' ? 'gear-fill' : 'clock';
+          
+          html += `
+            <div class="card mb-2">
+              <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-center">
+                  <div>
+                    <span class="badge bg-${statusClass} status-badge me-2"><i class="bi bi-${statusIcon}"></i> ${job.status}</span>
+                    <small class="text-muted">${job.job_type}</small>
+                  </div>
+                  <button class="btn btn-sm btn-outline-primary" onclick="showJobDetail('${job.id}')">詳情</button>
+                </div>
+                <div class="mt-1">
+                  <small class="text-muted"><i class="bi bi-hash"></i> ${job.id.substring(0, 20)}...</small>
+                  <small class="text-muted float-end"><i class="bi bi-clock"></i> ${new Date(job.created_at).toLocaleString('zh-TW')}</small>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+        listDiv.innerHTML = html;
+      } catch (error) {
+        listDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 載入失敗: ${error.message}</div>`;
+      }
+    }
+
+    // 顯示 Job 詳情
+    async function showJobDetail(jobId) {
+      const detailRow = document.getElementById('jobDetailRow');
+      const detailDiv = document.getElementById('jobDetail');
+      detailRow.style.display = 'block';
+      detailDiv.innerHTML = '<div class="text-center"><div class="spinner-border text-primary"></div></div>';
+      
+      // 滾動到詳情區域
+      detailRow.scrollIntoView({ behavior: 'smooth' });
+      
+      try {
+        const response = await fetch(`/worker/jobs/${jobId}`);
+        const job = await response.json();
+        
+        let html = `
+          <div class="row">
+            <div class="col-md-6">
+              <h6>基本信息</h6>
+              <table class="table table-sm">
+                <tr><td><strong>Job ID</strong></td><td><code>${job.id}</code></td></tr>
+                <tr><td><strong>類型</strong></td><td>${job.job_type}</td></tr>
+                <tr><td><strong>狀態</strong></td><td>${job.status}</td></tr>
+                <tr><td><strong>嘗試次數</strong></td><td>${job.attempt} / ${job.max_attempts}</td></tr>
+                <tr><td><strong>進度</strong></td><td>${job.progress || 0}%</td></tr>
+                <tr><td><strong>創建時間</strong></td><td>${new Date(job.created_at).toLocaleString('zh-TW')}</td></tr>
+              </table>
+            </div>
+            <div class="col-md-6">
+              <h6>輸入參數</h6>
+              <pre class="bg-light p-3 rounded">${JSON.stringify(job.input || {}, null, 2)}</pre>
+            </div>
+          </div>
+        `;
+        
+        if (job.result) {
+          html += `
+            <div class="mt-3">
+              <h6>結果</h6>
+              <pre class="bg-light p-3 rounded">${JSON.stringify(job.result, null, 2)}</pre>
+          `;
+          
+          // 如果有圖片 URL，顯示圖片
+          if (job.result.image_url) {
+            html += `
+              <div class="mt-3">
+                <h6>生成的圖片</h6>
+                <img src="${job.result.image_url}" class="result-image" alt="生成的圖片" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <div style="display:none;" class="alert alert-warning">
+                  <i class="bi bi-exclamation-triangle"></i> 圖片無法載入（可能是跨域問題或圖片已刪除）
+                  <br><a href="${job.result.image_url}" target="_blank" class="stretched-link">直接打開圖片連結</a>
+                </div>
+              </div>
+            `;
+          }
+          html += '</div>';
+        }
+        
+        if (job.error) {
+          html += `
+            <div class="mt-3">
+              <h6>錯誤訊息</h6>
+              <div class="alert alert-danger">${job.error}</div>
+            </div>
+          `;
+        }
+        
+        detailDiv.innerHTML = html;
+      } catch (error) {
+        detailDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> 載入失敗: ${error.message}</div>`;
+      }
+    }
+
+    // 關閉 Job 詳情
+    function closeJobDetail() {
+      document.getElementById('jobDetailRow').style.display = 'none';
+    }
+
+    // 頁面載入時自動載入 Job 列表
+    loadJobs();
+    
+    // 每 10 秒自動刷新 Job 列表
+    setInterval(loadJobs, 10000);
+  </script>
+</body>
+</html>

@@ -234,6 +234,15 @@ def list_project_jobs(project_id: str, db: Session = Depends(get_db)) -> list[Jo
     ]
 
 
+@app.get("/test")
+def test_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="test.html",
+        context={"request": request},
+    )
+
+
 @app.get("/ui")
 def ui_index(request: Request, db: Session = Depends(get_db)):
     projects = db.scalars(select(Project).order_by(Project.created_at.desc())).all()
@@ -541,6 +550,75 @@ def claim_worker_job(
         scene_id=job.scene_id,
         input=job.payload.get("input", {}),
     )
+
+
+# ========================================
+# 測試端點 - 直接創建 Image Job（跳過 LLM 腳本生成）
+# ========================================
+@app.post("/test/image-job", response_model=WorkerJobAcceptedResponse)
+def create_test_image_job(
+    payload: dict[str, Any], db: Session = Depends(get_db)
+) -> WorkerJobAcceptedResponse:
+    """
+    測試端點：直接創建 Image Job，跳過前面的 LLM 腳本生成流程
+    
+    Request Body:
+    {
+        "type": "character_image",  // character_image | scene_image | background_image
+        "input": {
+            "character_name": "測試角色",
+            "character_description": "藍色長髮，紅色眼睛",
+            "style": "anime"
+        }
+    }
+    """
+    job_type = payload.get("type", "character_image")
+    user_input = payload.get("input", {})
+    
+    # 驗證 job_type
+    valid_types = ["character_image", "scene_image", "background_image"]
+    if job_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid job_type. Must be one of: {valid_types}")
+    
+    job_id = _new_id("job")
+    job = _create_job(
+        db=db,
+        job_id=job_id,
+        job_type=job_type,
+        project_id=None,  # 測試模式不需要關聯 Project
+        episode_id=None,
+        scene_id=None,
+        worker_id=None,
+        worker_type="image",
+        priority=1,  # 高優先級
+        max_attempts=3,
+        payload={"input": user_input},
+    )
+    
+    return WorkerJobAcceptedResponse(job_id=job.id, status="accepted")
+
+
+@app.get("/test/image-jobs", response_model=list[JobSummaryResponse])
+def list_test_image_jobs(db: Session = Depends(get_db)) -> list[JobSummaryResponse]:
+    """列出所有測試 Image Job"""
+    jobs = db.scalars(
+        select(Job)
+        .where(Job.worker_type == "image")
+        .where(Job.project_id.is_(None))  # 測試 Job 沒有關聯 Project
+        .order_by(Job.created_at.desc())
+    ).all()
+    return [
+        JobSummaryResponse(
+            id=job.id,
+            job_type=job.job_type,
+            worker_type=job.worker_type,
+            status=job.status,
+            attempt=job.attempt,
+            max_attempts=job.max_attempts,
+            created_at=job.created_at,
+        )
+        for job in jobs
+    ]
 
 
 @app.post("/worker/jobs/{job_id}/status", response_model=WorkerJobStatusResponse)
