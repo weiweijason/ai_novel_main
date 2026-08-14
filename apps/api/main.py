@@ -585,11 +585,21 @@ def create_test_image_job(
     project_id = _new_id("proj")
     episode_id = _new_id("ep")
     
+    # 根據 job_type 設定正確的 Project 狀態
+    if job_type == "character_image":
+        project_status = "character_image_pending"
+    elif job_type == "scene_image":
+        project_status = "scene_image_pending"
+    elif job_type == "background_image":
+        project_status = "scene_image_pending"  # background_image 也屬於 scene_image 階段
+    else:
+        project_status = "ready_for_gpu_pipeline"
+    
     project = Project(
         id=project_id,
         name=f"測試專案 {job_type}",
         description="測試 Image Worker 的專案",
-        status="ready_for_gpu_pipeline",  # 直接進入 GPU 管線
+        status=project_status,  # 使用正確的狀態
         source_prompt=user_input.get("character_description", user_input.get("scene_description", "test")),
         workflow_data={
             "episode_id": episode_id,
@@ -619,23 +629,21 @@ def create_test_image_job(
     )
     db.add(episode)
     
-    # 創建 Scene（scene_image 和 background_image 需要）
-    scene_id = None
-    if job_type in ("scene_image", "background_image"):
-        scene_id = _new_id("scn")
-        scene = Scene(
-            id=scene_id,
-            episode_id=episode_id,
-            scene_number=1,
-            duration_seconds=10.0,
-            status="ready_for_image",
-            scene_data={
-                "description": user_input.get("scene_description", user_input.get("location", "test scene")),
-            },
-            created_at=_now(),
-            updated_at=_now(),
-        )
-        db.add(scene)
+    # 創建 Scene（工作流程需要 Scene 才能繼續推進）
+    scene_id = _new_id("scn")
+    scene = Scene(
+        id=scene_id,
+        episode_id=episode_id,
+        scene_number=1,
+        duration_seconds=10.0,
+        status="ready_for_image",
+        scene_data={
+            "description": user_input.get("scene_description", user_input.get("location", "anime scene, detailed background")),
+        },
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(scene)
     
     db.commit()
     

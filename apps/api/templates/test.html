@@ -310,11 +310,20 @@
                 <tr><td><strong>嘗試次數</strong></td><td>${job.attempt} / ${job.max_attempts}</td></tr>
                 <tr><td><strong>進度</strong></td><td>${job.progress || 0}%</td></tr>
                 <tr><td><strong>創建時間</strong></td><td>${new Date(job.created_at).toLocaleString('zh-TW')}</td></tr>
+                ${job.started_at ? `<tr><td><strong>開始時間</strong></td><td>${new Date(job.started_at).toLocaleString('zh-TW')}</td></tr>` : ''}
+                ${job.completed_at ? `<tr><td><strong>完成時間</strong></td><td>${new Date(job.completed_at).toLocaleString('zh-TW')}</td></tr>` : ''}
               </table>
             </div>
             <div class="col-md-6">
-              <h6>輸入參數</h6>
-              <pre class="bg-light p-3 rounded">${JSON.stringify(job.input || {}, null, 2)}</pre>
+              <h6>關聯資訊</h6>
+              <table class="table table-sm">
+                ${job.project_id ? `<tr><td><strong>Project ID</strong></td><td><code>${job.project_id}</code></td></tr>` : ''}
+                ${job.episode_id ? `<tr><td><strong>Episode ID</strong></td><td><code>${job.episode_id}</code></td></tr>` : ''}
+                ${job.scene_id ? `<tr><td><strong>Scene ID</strong></td><td><code>${job.scene_id}</code></td></tr>` : ''}
+                ${job.worker_id ? `<tr><td><strong>Worker ID</strong></td><td><code>${job.worker_id}</code></td></tr>` : '<tr><td><strong>Worker</strong></td><td class="text-muted">尚未分配</td></tr>'}
+              </table>
+              <h6 class="mt-3">輸入參數</h6>
+              <pre class="bg-light p-3 rounded" style="max-height: 200px; overflow-y: auto;">${JSON.stringify(job.input || {}, null, 2)}</pre>
             </div>
           </div>
         `;
@@ -323,7 +332,7 @@
           html += `
             <div class="mt-3">
               <h6>結果</h6>
-              <pre class="bg-light p-3 rounded">${JSON.stringify(job.result, null, 2)}</pre>
+              <pre class="bg-light p-3 rounded" style="max-height: 200px; overflow-y: auto;">${JSON.stringify(job.result, null, 2)}</pre>
           `;
           
           // 如果有圖片 URL，顯示圖片
