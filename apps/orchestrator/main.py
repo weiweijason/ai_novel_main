@@ -482,6 +482,7 @@ def process_project(db, project: Project) -> None:
 
         # === GPU 管線階段 2: 場景圖像生成 ===
         elif status == "character_image_pending":
+            logger.info("Project %s: checking character_image completion", project.id)
             # 檢查是否有 character_image job 存在
             char_image_jobs = db.scalars(
                 select(Job).where(
@@ -490,6 +491,8 @@ def process_project(db, project: Project) -> None:
                 )
             ).all()
 
+            logger.info("Project %s: found %d character_image jobs", project.id, len(char_image_jobs))
+            
             if not char_image_jobs:
                 # 沒有建立任何 job（可能沒有角色），直接跳過
                 logger.info("Project %s: no character_image jobs, skipping to scene_image", project.id)
@@ -499,13 +502,37 @@ def process_project(db, project: Project) -> None:
 
             # 檢查所有 character_image job 是否完成
             completed_char_jobs = [j for j in char_image_jobs if j.status == "completed"]
+            failed_char_jobs = [j for j in char_image_jobs if j.status == "failed"]
+            running_char_jobs = [j for j in char_image_jobs if j.status in ("queued", "running")]
+            
+            logger.info(
+                "Project %s: character_image status - completed:%d, failed:%d, running:%d",
+                project.id, len(completed_char_jobs), len(failed_char_jobs), len(running_char_jobs)
+            )
+            
+            if failed_char_jobs:
+                logger.warning("Project %s: %d character_image jobs failed", project.id, len(failed_char_jobs))
+                for j in failed_char_jobs:
+                    logger.warning("  Failed job %s: %s", j.id, j.error)
+            
             if len(completed_char_jobs) != len(char_image_jobs):
-                logger.debug("Project %s: character_image %d/%d completed", project.id, len(completed_char_jobs), len(char_image_jobs))
+                logger.info("Project %s: character_image %d/%d completed (waiting...)", project.id, len(completed_char_jobs), len(char_image_jobs))
                 continue
+
+            logger.info("Project %s: all character_image jobs completed!", project.id)
 
             # 所有角色圖像完成，建立場景圖像 job
             scenes = db.scalars(select(Scene).where(Scene.episode_id == episode_id)).all()
-            for scene in scenes:
+            scenes_list = list(scenes)
+            logger.info("Project %s: found %d scenes", project.id, len(scenes_list))
+            
+            if not scenes_list:
+                logger.warning("Project %s: no scenes found, cannot proceed to scene_image", project.id)
+                project.status = "failed"
+                project.updated_at = now_utc()
+                continue
+            
+            for scene in scenes_list:
                 scene_data = scene.scene_data or {}
                 scene_desc = scene_data.get("description", "")
                 if not has_scene_job(db, project.id, scene.id, "scene_image"):
