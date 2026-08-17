@@ -188,6 +188,8 @@ def enqueue_llm_job(
             created_at=now_utc(),
         )
     )
+    # 立即 flush 讓新 job 可以被查詢到
+    db.flush()
 
 
 # GPU Worker 類型對應
@@ -238,6 +240,8 @@ def enqueue_gpu_job(
             created_at=now_utc(),
         )
     )
+    # 立即 flush 讓新 job 可以被查詢到
+    db.flush()
 
 
 def process_failed_jobs(db) -> None:
